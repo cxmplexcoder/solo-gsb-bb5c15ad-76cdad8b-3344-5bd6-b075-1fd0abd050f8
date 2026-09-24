@@ -12,7 +12,7 @@ const BACKSTAGE = '后台';
 
 /* ---------- 读取全量状态（含重放结果） ---------- */
 
-function loadState() {
+function readData() {
   const locations = db
     .prepare('SELECT name, unlimited FROM locations ORDER BY unlimited DESC, rowid')
     .all()
@@ -32,6 +32,11 @@ function loadState() {
       transfers: trStmt.all(c.number).map((t) => ({ prop: t.prop, from: t.from_loc, to: t.to_loc })),
     }));
 
+  return { locations, props, cues };
+}
+
+function loadState() {
+  const { locations, props, cues } = readData();
   return { locations, props, cues, replay: replay(locations, props, cues) };
 }
 
@@ -192,6 +197,55 @@ app.delete('/api/cues/:number', (req, res) => {
     return bad(res, `提示号 ${number} 不存在`, 404);
   db.prepare('DELETE FROM cues WHERE number = ?').run(number); // 转移级联删除
   ok(res);
+});
+
+/* ---------- 试排预览（仅内存重放，不写库） ---------- */
+
+app.post('/api/cues/preview', (req, res) => {
+  // 与保存一致的字段校验，草稿不合法时返回具体错误
+  const v = validateCuePayload(req.body);
+  if (v.err) return bad(res, v.err);
+
+  const { locations, props, cues } = readData();
+
+  // 内存中的假设序列：同号替换，否则按提示号插入，全程不写库
+  const draft = { number: v.number, note: v.note, transfers: v.transfers };
+  const hypothetical = cues.filter((c) => c.number !== v.number);
+  hypothetical.push(draft);
+  hypothetical.sort((a, b) => a.number - b.number);
+
+  const before = replay(locations, props, cues);
+  const after = replay(locations, props, hypothetical);
+
+  // 对比两条序列的重放结果，找出生效状态（或冲突原因）发生变化的提示
+  const beforeByNum = new Map(before.results.map((r) => [r.number, r]));
+  const afterByNum = new Map(after.results.map((r) => [r.number, r]));
+  const numbers = [...new Set([...beforeByNum.keys(), ...afterByNum.keys()])].sort((a, b) => a - b);
+
+  const cueChanges = [];
+  for (const n of numbers) {
+    const b = beforeByNum.get(n) || null;
+    const a = afterByNum.get(n) || null;
+    const same = b && a && b.ok === a.ok && JSON.stringify(b.errors) === JSON.stringify(a.errors);
+    if (same) continue;
+    cueChanges.push({
+      number: n,
+      note: (a || b).note,
+      isDraft: n === v.number,
+      before: b ? { ok: b.ok, errors: b.errors } : null,
+      after: a ? { ok: a.ok, errors: a.errors } : null,
+    });
+  }
+
+  // 对比最终区位，列出发生变化的道具
+  const propChanges = [];
+  for (const p of props) {
+    const bLoc = before.finalState[p.name];
+    const aLoc = after.finalState[p.name];
+    if (bLoc !== aLoc) propChanges.push({ prop: p.name, before: bLoc, after: aLoc });
+  }
+
+  res.json({ draft: { number: v.number, note: v.note }, cueChanges, propChanges });
 });
 
 /* ---------- 启动 ---------- */

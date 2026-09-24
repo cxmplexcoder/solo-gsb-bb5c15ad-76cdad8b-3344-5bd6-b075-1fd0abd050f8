@@ -43,7 +43,7 @@
     <section class="row">
       <div class="card wide">
         <h2>③ 录入提示（一组同时发生的转移）</h2>
-        <p class="hint">提示号唯一；同组内每件道具最多转移一次；整组校验通过才生效，允许同组互换区位。</p>
+        <p class="hint">提示号唯一；同组内每件道具最多转移一次；整组校验通过才生效，允许同组互换区位。保存前可点「试排预览」在内存中预演效果（不写库）。</p>
         <form id="cue-form">
           <div class="inline-form">
             <label>提示号 <input id="cue-number" type="number" min="1" step="1" required /></label>
@@ -56,10 +56,13 @@
           <div class="btn-row">
             <button type="button" id="add-transfer" class="ghost">＋ 添加一条转移</button>
             <span class="spacer"></span>
+            <button type="button" id="cue-preview-btn" class="ghost">试排预览</button>
             <button type="submit" id="cue-submit">保存提示</button>
             <button type="button" id="cue-cancel" class="ghost hidden">取消编辑</button>
           </div>
         </form>
+        <!-- 试排预览结果（仅内存重放，不写库；表单改动后自动清除） -->
+        <div id="cue-preview" class="hidden"></div>
       </div>
     </section>
 
