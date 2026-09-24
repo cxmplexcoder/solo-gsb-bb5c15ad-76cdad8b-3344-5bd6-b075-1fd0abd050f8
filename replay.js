@@ -87,4 +87,48 @@ function replay(locations, props, cues) {
   return { results, finalState: state, finalLocations };
 }
 
-module.exports = { replay };
+/**
+ * 对比两次重放的结果（用于「试排预览」：现行序列 vs 草稿插入/替换后的假设序列）。
+ *
+ *  - changedCues：按提示号列出「生效状态」发生变化的提示（含新增），携带前后冲突原因；
+ *  - movedProps：最终区位发生变化的道具（from/to 为 null 表示道具在该序列中不存在）。
+ *
+ * @param {ReturnType<replay>} before 现行序列重放结果
+ * @param {ReturnType<replay>} after  假设序列重放结果
+ */
+function diffReplays(before, after) {
+  const beforeBy = new Map(before.results.map((r) => [r.number, r]));
+  const afterBy = new Map(after.results.map((r) => [r.number, r]));
+  const numbers = new Set([...beforeBy.keys(), ...afterBy.keys()]);
+
+  const changedCues = [];
+  for (const number of numbers) {
+    const b = beforeBy.get(number) || null;
+    const a = afterBy.get(number) || null;
+    // 新增（一边不存在）或 ok 状态翻转，都算生效状态变化
+    if (!b || !a || b.ok !== a.ok) {
+      changedCues.push({
+        number,
+        note: (a || b).note,
+        before: b ? { ok: b.ok, errors: b.errors } : null,
+        after: a ? { ok: a.ok, errors: a.errors } : null,
+      });
+    }
+  }
+  changedCues.sort((x, y) => x.number - y.number);
+
+  const movedProps = [];
+  const allProps = new Set([
+    ...Object.keys(before.finalState),
+    ...Object.keys(after.finalState),
+  ]);
+  for (const prop of allProps) {
+    const from = before.finalState[prop];
+    const to = after.finalState[prop];
+    if (from !== to) movedProps.push({ prop, from: from || null, to: to || null });
+  }
+
+  return { changedCues, movedProps };
+}
+
+module.exports = { replay, diffReplays };

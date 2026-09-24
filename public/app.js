@@ -95,6 +95,7 @@ function addTransferRow(t) {
   tr.querySelector('.t-remove').onclick = () => {
     tr.remove();
     if (!$('#transfer-rows').children.length) addTransferRow();
+    clearPreview();
   };
   $('#transfer-rows').appendChild(tr);
 }
@@ -106,6 +107,7 @@ function resetCueForm() {
   $('#transfer-rows').innerHTML = '';
   addTransferRow();
   renderCueForm();
+  clearPreview();
 }
 
 function renderCues() {
@@ -216,19 +218,115 @@ $('#prop-rows').addEventListener('click', (e) => {
     api(`/api/props/${encodeURIComponent(name)}`, 'DELETE').catch(() => {});
 });
 
-$('#add-transfer').addEventListener('click', () => addTransferRow());
+$('#add-transfer').addEventListener('click', () => { addTransferRow(); clearPreview(); });
 
 $('#cue-cancel').addEventListener('click', resetCueForm);
 
+/* ---------- 试排预览（不写库） ---------- */
+
+function collectCueForm() {
+  return {
+    number: Number($('#cue-number').value),
+    note: $('#cue-note').value.trim(),
+    transfers: [...$('#transfer-rows').querySelectorAll('tr')].map((tr) => ({
+      prop: tr.querySelector('.t-prop').value,
+      from: tr.querySelector('.t-from').value,
+      to: tr.querySelector('.t-to').value,
+    })),
+  };
+}
+
+function clearPreview() {
+  const panel = $('#cue-preview-panel');
+  panel.classList.add('hidden');
+  panel.innerHTML = '';
+}
+
+function statusSideHtml(side) {
+  if (!side) return '<span class="pv-none">（序列中不存在）</span>';
+  if (side.ok) return '<span class="badge ok">✓ 生效</span>';
+  return `<span class="badge fail">✗ 未生效</span>
+    <ul class="cue-errors">${side.errors.map((e) => `<li>${esc(e)}</li>`).join('') || '<li>（无冲突原因）</li>'}</ul>`;
+}
+
+function renderPreview(data) {
+  const panel = $('#cue-preview-panel');
+  const modeText = data.mode === 'replace'
+    ? `假设<strong>替换</strong>提示 ${data.draft.number} 的整组内容`
+    : `假设<strong>新增</strong>提示 ${data.draft.number}`;
+
+  const cueBlocks = data.changedCues
+    .map((c) => {
+      const flip = !c.before || !c.after
+        ? '<span class="pv-tag new">序列成员变化</span>'
+        : c.after.ok
+          ? '<span class="pv-flip up">未生效 → 生效 ↑</span>'
+          : '<span class="pv-flip down">生效 → 未生效 ↓</span>';
+      return `
+        <div class="pv-cue">
+          <div class="pv-cue-head"><span class="num">提示 ${c.number}</span> ${flip}</div>
+          <div class="pv-sides">
+            <div class="pv-side"><div class="pv-side-label">现行</div>${statusSideHtml(c.before)}</div>
+            <div class="pv-arrow">→</div>
+            <div class="pv-side"><div class="pv-side-label">假设</div>${statusSideHtml(c.after)}</div>
+          </div>
+        </div>`;
+    })
+    .join('');
+
+  const movedBlocks = data.movedProps.length
+    ? `<ul class="pv-moved">${data.movedProps
+        .map((m) => `<li>「${esc(m.prop)}」：${m.from ? esc(m.from) : '（不存在）'} <span class="arrow">→</span> ${m.to ? esc(m.to) : '（不存在）'}</li>`)
+        .join('')}</ul>`
+    : '<p class="hint">没有道具的最终区位发生变化。</p>';
+
+  panel.innerHTML = `
+    <div class="pv-title">🧪 试排预览 · ${modeText}（仅内存重放，未写入数据库）</div>
+    <h4>生效状态发生变化的提示</h4>
+    ${cueBlocks || '<p class="hint">草稿加入后，所有提示的生效状态均无变化。</p>'}
+    <h4>最终区位发生变化的道具</h4>
+    ${movedBlocks}`;
+  panel.classList.remove('hidden');
+}
+
+function renderPreviewError(msg) {
+  const panel = $('#cue-preview-panel');
+  panel.innerHTML = `<div class="pv-title">🧪 试排预览</div><div class="pv-error">草稿不合法：${esc(msg)}</div>`;
+  panel.classList.remove('hidden');
+}
+
+$('#cue-preview').addEventListener('click', async () => {
+  const btn = $('#cue-preview');
+  clearPreview();
+  btn.disabled = true;
+  btn.textContent = '重放中…';
+  try {
+    const res = await fetch('/api/cues/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectCueForm()),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      renderPreviewError(data.error || '预览失败');
+    } else {
+      renderPreview(data);
+    }
+  } catch (err) {
+    renderPreviewError('无法连接服务器');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🧪 试排预览（不保存）';
+  }
+});
+
+// 表单内容一旦改动，旧预览即失效
+$('#cue-form').addEventListener('input', clearPreview);
+$('#cue-form').addEventListener('change', clearPreview);
+
 $('#cue-form').addEventListener('submit', (e) => {
   e.preventDefault();
-  const number = Number($('#cue-number').value);
-  const note = $('#cue-note').value.trim();
-  const transfers = [...$('#transfer-rows').querySelectorAll('tr')].map((tr) => ({
-    prop: tr.querySelector('.t-prop').value,
-    from: tr.querySelector('.t-from').value,
-    to: tr.querySelector('.t-to').value,
-  }));
+  const { number, note, transfers } = collectCueForm();
   const req = editingCue !== null
     ? api(`/api/cues/${editingCue}`, 'PUT', { note, transfers })
     : api('/api/cues', 'POST', { number, note, transfers });
@@ -247,6 +345,7 @@ $('#cue-list').addEventListener('click', (e) => {
     $('#transfer-rows').innerHTML = '';
     cue.transfers.forEach((t) => addTransferRow(t));
     renderCueForm();
+    clearPreview();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } else if (delNum) {
     if (confirm(`删除提示 ${delNum}？删除后将按提示号重放全部剩余提示。`))

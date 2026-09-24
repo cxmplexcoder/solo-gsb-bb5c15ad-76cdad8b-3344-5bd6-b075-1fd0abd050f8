@@ -2,7 +2,7 @@
 
 const express = require('express');
 const db = require('./db');
-const { replay } = require('./replay');
+const { replay, diffReplays } = require('./replay');
 
 const app = express();
 app.use(express.json());
@@ -12,7 +12,7 @@ const BACKSTAGE = '后台';
 
 /* ---------- 读取全量状态（含重放结果） ---------- */
 
-function loadState() {
+function loadBaseData() {
   const locations = db
     .prepare('SELECT name, unlimited FROM locations ORDER BY unlimited DESC, rowid')
     .all()
@@ -32,6 +32,11 @@ function loadState() {
       transfers: trStmt.all(c.number).map((t) => ({ prop: t.prop, from: t.from_loc, to: t.to_loc })),
     }));
 
+  return { locations, props, cues };
+}
+
+function loadState() {
+  const { locations, props, cues } = loadBaseData();
   return { locations, props, cues, replay: replay(locations, props, cues) };
 }
 
@@ -165,6 +170,37 @@ app.post('/api/cues', (req, res) => {
   });
   tx();
   ok(res);
+});
+
+/* ---------- 试排预览（不写库） ----------
+ * 沿用保存时的字段校验，把草稿按提示号插入或替换到内存中的序列，
+ * 分别重放「现行序列」与「假设序列」，返回生效状态变化与最终区位变化。
+ */
+app.post('/api/cues/preview', (req, res) => {
+  const v = validateCuePayload(req.body);
+  if (v.err) return bad(res, v.err);
+
+  const { locations, props, cues } = loadBaseData();
+  const draft = { number: v.number, note: v.note, transfers: v.transfers };
+  const existed = cues.some((c) => c.number === v.number);
+
+  // 按提示号插入新提示，或整组替换同号提示（仅内存，不落库）
+  const hypothetical = existed
+    ? cues.map((c) => (c.number === v.number ? draft : c))
+    : [...cues, draft].sort((a, b) => a.number - b.number);
+
+  const currentReplay = replay(locations, props, cues);
+  const hypotheticalReplay = replay(locations, props, hypothetical);
+  const diff = diffReplays(currentReplay, hypotheticalReplay);
+
+  res.json({
+    mode: existed ? 'replace' : 'insert',
+    draft,
+    current: currentReplay,
+    hypothetical: hypotheticalReplay,
+    changedCues: diff.changedCues,
+    movedProps: diff.movedProps,
+  });
 });
 
 app.put('/api/cues/:number', (req, res) => {
